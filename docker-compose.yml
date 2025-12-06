@@ -1,0 +1,261 @@
+services:
+  # ========================
+  # HDFS - Distributed Storage
+  # ========================
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    restart: always
+    ports:
+      - "9870:9870"  # Web UI
+      - "9000:9000"  # HDFS port
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+      - ./data:/data
+    environment:
+      - CLUSTER_NAME=bigdata-cluster
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    env_file:
+      - ./hadoop.env
+    networks:
+      - bigdata-network
+    healthcheck:
+      test: ["CMD", "bash", "-c", "hdfs dfs -ls / >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 40s
+
+  hdfs-init:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    depends_on:
+      namenode:
+        condition: service_healthy
+    env_file:
+      - ./hadoop.env          # so hdfs knows fs_defaultFS is hdfs://namenode:9000
+    networks:
+      - bigdata-network
+    volumes:
+      - ./init-scripts:/init-scripts
+    entrypoint: [ "bash", "/init-scripts/namenode-init.sh" ]
+    restart: "no"
+
+  datanode1:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode1
+    restart: always
+    depends_on:
+      - namenode
+    volumes:
+      - hadoop_datanode1:/hadoop/dfs/data
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    env_file:
+      - ./hadoop.env
+    networks:
+      - bigdata-network
+
+  datanode2:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode2
+    restart: always
+    depends_on:
+      - namenode
+    volumes:
+      - hadoop_datanode2:/hadoop/dfs/data
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    env_file:
+      - ./hadoop.env
+    networks:
+      - bigdata-network
+
+  datanode3:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode3
+    restart: always
+    depends_on:
+      - namenode
+    volumes:
+      - hadoop_datanode3:/hadoop/dfs/data
+    environment:
+      - CORE_CONF_fs_defaultFS=hdfs://namenode:9000
+    env_file:
+      - ./hadoop.env
+    networks:
+      - bigdata-network
+
+  # ========================
+  # Spark - Distributed Processing
+  # ========================
+  spark-master:
+    image: bde2020/spark-master:3.3.0-hadoop3.3
+    container_name: spark-master
+    restart: always
+    ports:
+      - "8080:8080"   # Spark Master Web UI
+      - "7077:7077"   # Spark Master port
+    environment:
+      - INIT_DAEMON_STEP=setup_spark
+    networks:
+      - bigdata-network
+
+  spark-worker1:
+    image: bde2020/spark-worker:3.3.0-hadoop3.3
+    container_name: spark-worker1
+    restart: always
+    depends_on:
+      - spark-master
+    ports:
+      - "8081:8081"   # Worker 1 Web UI
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+    volumes:
+      - ./spark-apps:/opt/spark-apps
+      - ./spark-data:/opt/spark-data
+    networks:
+      - bigdata-network
+
+  spark-worker2:
+    image: bde2020/spark-worker:3.3.0-hadoop3.3
+    container_name: spark-worker2
+    restart: always
+    depends_on:
+      - spark-master
+    ports:
+      - "8082:8081"   # Worker 2 Web UI
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+    volumes:
+      - ./spark-apps:/opt/spark-apps
+      - ./spark-data:/opt/spark-data
+    networks:
+      - bigdata-network
+
+  # ========================
+  # Kafka - Stream Processing
+  # ========================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: zookeeper
+    restart: always
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+    networks:
+      - bigdata-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: kafka
+    restart: always
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - bigdata-network
+
+  # ========================
+  # MongoDB - Results Storage
+  # ========================
+  mongodb:
+    image: mongo:7.0
+    container_name: mongodb
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_DATABASE: crime_analysis
+    volumes:
+      - mongodb-data:/data/db
+    networks:
+      - bigdata-network
+
+  # ========================
+  # Jupyter - Development & ML
+  # ========================
+  jupyter:
+    image: jupyter/pyspark-notebook:spark-3.3.0
+    container_name: jupyter
+    restart: always
+    depends_on:
+      - spark-master
+      - mongodb
+      - kafka
+    ports:
+      - "8888:8888"  # Jupyter Web UI
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - GRANT_SUDO=yes
+      - SPARK_MASTER=spark://spark-master:7077
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data
+      - ./spark-apps:/home/jovyan/spark-apps
+    user: root
+    command: >
+      bash -lc "pip install --quiet --no-cache-dir kafka-python pymongo pandas numpy scikit-learn matplotlib seaborn plotly folium pyspark hdfs 
+      && chown -R jovyan:users /home/jovyan 
+      && start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''"
+    networks:
+      - bigdata-network
+
+  # ========================
+  # Visualization Dashboard
+  # ========================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: always
+    depends_on:
+      - mongodb
+    ports:
+      - "3000:3000"  # Grafana Web UI
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_INSTALL_PLUGINS=grafana-mongodb-datasource
+    volumes:
+      - grafana-data:/var/lib/grafana
+    networks:
+      - bigdata-network
+
+# ========================
+# Networks
+# ========================
+networks:
+  bigdata-network:
+    driver: bridge
+
+# ========================
+# Volumes
+# ========================
+volumes:
+  hadoop_namenode:
+  hadoop_datanode1:
+  hadoop_datanode2:
+  hadoop_datanode3:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  mongodb-data:
+  grafana-data:
