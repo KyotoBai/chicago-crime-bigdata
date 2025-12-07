@@ -200,31 +200,37 @@ MongoDB (mongodb:27017)
 ```
 ┌────────────────────────────────────────────┐
 │  HDFS: /data/raw/                          │
-│  chicago_crimes.parquet (400 MB)           │
+│  chicago_crimes.parquet                    │
 └────────┬───────────────────────────────────┘
          │
          ▼
-┌────────────────────────────────────────────┐
-│  STEP 3: Spark ETL Job                    │
-│                                            │
-│  TRANSFORMATION PIPELINE:                  │
-│  1. Data Cleaning                          │
-│     - Remove nulls                         │
-│     - Drop duplicates                      │
-│                                            │
-│  2. Feature Engineering                    │
-│     - Extract time features                │
-│     - Create binary flags                  │
-│     - Categorize crimes                    │
-│     - Calculate risk scores                │
-│                                            │
-│  PARALLEL EXECUTION:                       │
-│  ┌──────────────┐  ┌──────────────┐       │
-│  │ Worker 1     │  │ Worker 2     │       │
-│  │ Processes:   │  │ Processes:   │       │
-│  │ - Part 0-3   │  │ - Part 4-7   │       │
-│  └──────────────┘  └──────────────┘       │
-└────────┬───────────────────────────────────┘
+┌───────────────────────────────────────────────┐
+│  STEP 3: Spark ETL Job                        │
+│                                               │
+│  TRANSFORMATION PIPELINE:                     │
+│  1. Data Cleaning                             │
+│     - Remove nulls                            │
+│     - Drop duplicates                         │
+│                                               │
+│  2. Feature Engineering                       │
+|     - Timestamp parsed                        |
+|       (can sort, filter by time)              |
+│     - Extract time features                   │
+|       (hour, day, month)                      |
+|       (Create Time Period Categories)         |
+|       (change the time period based on sesson)|
+│     - Create binary flags                     │
+│     - Categorize crimes                       │
+|       (severity, time period)                 |
+│     - Calculate risk scores                   │
+│                                               │
+│  PARALLEL EXECUTION:                          │
+│  ┌──────────────┐  ┌──────────────┐           │
+│  │ Worker 1     │  │ Worker 2     │           │
+│  │ Processes:   │  │ Processes:   │           │
+│  │ - Part 0-3   │  │ - Part 4-7   │           │
+│  └──────────────┘  └──────────────┘           │
+└────────┬──────────────────────────────────────┘
          │
          ▼
 ┌────────────────────────────────────────────┐

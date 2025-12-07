@@ -194,7 +194,10 @@ services:
   # Jupyter - Development & ML
   # ========================
   jupyter:
-    image: jupyter/pyspark-notebook:spark-3.3.0
+    build:
+      context: .
+      dockerfile: dockerfiles/jupyter/Dockerfile
+    image: local/jupyter-py37-spark33
     container_name: jupyter
     restart: always
     depends_on:
@@ -207,17 +210,18 @@ services:
       - JUPYTER_ENABLE_LAB=yes
       - GRANT_SUDO=yes
       - SPARK_MASTER=spark://spark-master:7077
+      - PYSPARK_PYTHON=python3
+      - PYSPARK_DRIVER_PYTHON=python3
     volumes:
       - ./notebooks:/home/jovyan/work
       - ./data:/home/jovyan/data
       - ./spark-apps:/home/jovyan/spark-apps
-    user: root
-    command: >
-      bash -lc "pip install --quiet --no-cache-dir kafka-python pymongo pandas numpy scikit-learn matplotlib seaborn plotly folium pyspark hdfs 
-      && chown -R jovyan:users /home/jovyan 
-      && start-notebook.sh --NotebookApp.token='' --NotebookApp.password=''"
     networks:
       - bigdata-network
+    command: >
+      start-notebook.sh
+      --NotebookApp.token=''
+      --NotebookApp.password=''
 
   # ========================
   # Visualization Dashboard

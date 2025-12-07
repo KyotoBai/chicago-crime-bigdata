@@ -22,11 +22,11 @@ def build_producer(bootstrap_servers):
 
 
 def stream_csv_to_kafka(
-    csv_path: str,
-    topic: str,
-    bootstrap_servers: list[str],
-    sleep_sec: float,
-    max_rows: int | None,
+    csv_path,
+    topic,
+    bootstrap_servers,
+    sleep_sec,
+    max_rows,
 ):
     producer = build_producer(bootstrap_servers)
 
