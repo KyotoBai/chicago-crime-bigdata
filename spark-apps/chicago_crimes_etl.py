@@ -449,12 +449,33 @@ def add_crime_features(df):
 
     # Composite risk score
     df = df.withColumn(
-        "risk_score",
+        "risk_score_raw",
         F.col("crime_severity_weight")
         + F.col("location_risk_weight")
         + F.when(F.col("is_night"), 2.0).otherwise(0.0)
         + F.when(F.col("is_domestic_incident"), 1.5).otherwise(0.0)
         + F.when(F.col("is_public_space"), 1.0).otherwise(0.0),
+    )
+
+    # ---- Normalize risk_score_raw to [1, 10] ----
+    # Theoretical min/max given the weights:
+    #  min_raw = 1 (crime low) + 1 (location low) = 2.0
+    #  max_raw = 10 (crime high) + 3 (location high) + 2 + 1.5 + 1 = 17.5
+    min_raw = 2.0
+    max_raw = 17.5
+    scale = 9.0 / (max_raw - min_raw)  # 1..10 range → 9 units above 1
+
+    df = df.withColumn(
+        "risk_score",
+        1.0 + (F.col("risk_score_raw") - F.lit(min_raw)) * F.lit(scale)
+    )
+
+    # Clamp just in case any future changes push it outside [1, 10]
+    df = df.withColumn(
+        "risk_score",
+        F.when(F.col("risk_score") < 1.0, 1.0)
+         .when(F.col("risk_score") > 10.0, 10.0)
+         .otherwise(F.col("risk_score"))
     )
 
     return df
