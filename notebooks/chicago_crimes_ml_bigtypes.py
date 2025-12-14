@@ -114,7 +114,7 @@ def main():
     # -------------------------------------------------
     # ⭐ 关键降内存手段 1：对整体数据做采样
     # -------------------------------------------------
-    SAMPLE_FRACTION = 0.4  # 可根据内存再调小一点，比如 0.3
+    SAMPLE_FRACTION = 1.0  # 可根据内存再调小一点，比如 0.3
     sampled_total = int(total_count * SAMPLE_FRACTION)
 
     ml_df = ml_df.sample(withReplacement=False, fraction=SAMPLE_FRACTION, seed=42)
