@@ -1,0 +1,413 @@
+from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import DoubleType, StringType, ArrayType
+from pyspark.ml.feature import VectorAssembler, StringIndexer
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator, BinaryClassificationEvaluator
+from pyspark.ml import Pipeline
+from pyspark.ml.functions import vector_to_array
+
+import pymongo
+from datetime import datetime
+
+PROCESSED_PATH = "hdfs://namenode:9000/data/processed/chicago_crimes_clean.parquet"
+RESULTS_PATH = "hdfs://namenode:9000/data/results/domestic_incident_predictions_rf.parquet"
+
+
+def build_spark():
+    spark = (
+        SparkSession.builder
+        .appName("ChicagoDomesticIncidentML")
+        .master("spark://spark-master:7077")
+        # Executor resources
+        .config("spark.executor.memory", "3g")
+        .config("spark.executor.cores", "2")
+        .config("spark.executor.instances", "2")
+        # Driver resources
+        .config("spark.driver.memory", "2g")
+        # SQL shuffle settings
+        .config("spark.sql.shuffle.partitions", "128")
+        # Memory tuning
+        .config("spark.memory.fraction", "0.6")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+    return spark
+
+
+def load_processed(spark):
+    df = spark.read.parquet(PROCESSED_PATH)
+    return df
+
+
+def main():
+    spark = build_spark()
+
+    # 1) Load processed data
+    df = load_processed(spark)
+    total_count = df.count()
+    print(f"Loaded {total_count} records from {PROCESSED_PATH}")
+
+    print("Columns in processed df:")
+    print(df.columns)
+
+    # 2) Select features and label
+    ml_df = df.select(
+        "ID",
+        "crime_datetime",
+        F.col("District").cast(DoubleType()).alias("District"),
+        F.col("Community Area").cast(DoubleType()).alias("Community_Area"),
+        "Location Description",
+        "location_category",
+        "crime_hour",
+        "crime_day_of_week",
+        "crime_month",
+        "time_of_day",
+        "season",
+        "location_risk_weight",
+        "Latitude",
+        "Longitude",
+        "is_night",
+        "is_domestic_incident",
+        "is_public_space",
+    )
+
+    # Derived time features
+    ml_df = ml_df.withColumn(
+        "is_weekend",
+        F.when(F.col("crime_day_of_week").isin(0, 6), 1.0).otherwise(0.0)
+    )
+
+    ml_df = ml_df.withColumn(
+        "is_work_hour",
+        F.when((F.col("crime_hour") >= 8) & (F.col("crime_hour") <= 18), 1.0).otherwise(0.0)
+    )
+
+    # String version for categorical encoding
+    ml_df = ml_df.withColumn("District_str", F.col("District").cast(StringType()))
+
+    # Drop rows with nulls in required columns (including label)
+    ml_df = ml_df.na.drop(
+        subset=[
+            "is_domestic_incident",
+            "crime_hour",
+            "crime_day_of_week",
+            "crime_month",
+            "District",
+            "location_category",
+        ]
+    )
+
+    # Cast boolean-like columns to double (exclude label from features)
+    bool_cols = [
+        "is_night",
+        "is_public_space",
+        "is_weekend",
+        "is_work_hour",
+    ]
+    for c in bool_cols:
+        if c in ml_df.columns:
+            ml_df = ml_df.withColumn(c, F.col(c).cast(DoubleType()))
+
+    # Numeric feature columns (exclude is_domestic_incident)
+    numeric_cols = [
+        "crime_hour",
+        "crime_day_of_week",
+        "crime_month",
+        "location_risk_weight",
+        "Latitude",
+        "Longitude",
+        "District",
+        "Community_Area",
+        "is_night",
+        "is_public_space",
+        "is_weekend",
+        "is_work_hour",
+    ]
+
+    # Fill nulls in numeric columns to avoid VectorAssembler errors
+    ml_df = ml_df.na.fill(0.0, subset=numeric_cols)
+
+    # Label: is_domestic_incident -> label (0/1)
+    ml_df = ml_df.withColumn(
+        "label",
+        F.col("is_domestic_incident").cast(DoubleType())
+    )
+
+    # Print class balance
+    label_dist = ml_df.groupBy("label").count().collect()
+    print("\nLabel distribution (0 = Non-Domestic, 1 = Domestic):")
+    for row in label_dist:
+        print(f"  label={int(row['label'])}, count={row['count']}")
+
+    # 3) Sample to reduce memory pressure
+    SAMPLE_FRACTION = 0.7
+    sampled_total = int(total_count * SAMPLE_FRACTION)
+
+    ml_df = ml_df.sample(withReplacement=False, fraction=SAMPLE_FRACTION, seed=42)
+    print(f"\nUsing a {SAMPLE_FRACTION*100:.1f}% sample for domestic-incident model:")
+    print(f"Sampled records: {ml_df.count()} (out of {total_count})")
+
+    # Reduce high-cardinality Location Description after sampling
+    TOP_N_LOC_DESC = 20
+
+    top_loc_rows = (
+        ml_df.groupBy("Location Description")
+             .count()
+             .orderBy(F.desc("count"))
+             .limit(TOP_N_LOC_DESC)
+             .collect()
+    )
+    top_loc_desc = [r["Location Description"] for r in top_loc_rows]
+    print("Top location descriptions:", top_loc_desc)
+
+    ml_df = ml_df.withColumn(
+        "loc_desc_topN",
+        F.when(
+            F.col("Location Description").isin(top_loc_desc),
+            F.col("Location Description")
+        ).otherwise(F.lit("OTHER"))
+    )
+
+    # 4) Encode categorical features
+    MAX_BINS = 64
+
+    all_cat_cols_info = [
+        ("time_of_day", "time_of_day_idx"),
+        ("season", "season_idx"),
+        ("location_category", "location_category_idx"),
+        ("District_str", "District_idx"),
+        ("loc_desc_topN", "loc_desc_idx"),
+    ]
+
+    cat_cols_info = []
+    print("\n[Check categorical cardinality]")
+    for input_col, output_col in all_cat_cols_info:
+        if input_col not in ml_df.columns:
+            continue
+        distinct_cnt = ml_df.select(input_col).distinct().count()
+        print(f"  {input_col}: distinct = {distinct_cnt}")
+        if distinct_cnt <= MAX_BINS:
+            cat_cols_info.append((input_col, output_col))
+        else:
+            print(f"  -> Skip {input_col} because distinct {distinct_cnt} > MAX_BINS ({MAX_BINS})")
+
+    print("\n[Will use categorical columns]:", [c for c, _ in cat_cols_info])
+
+    indexers = []
+    for input_col, output_col in cat_cols_info:
+        indexer = StringIndexer(
+            inputCol=input_col,
+            outputCol=output_col,
+            handleInvalid="keep",
+        )
+        indexers.append(indexer)
+
+    idx_cols = [out for (_, out) in cat_cols_info]
+
+    assembler = VectorAssembler(
+        inputCols=numeric_cols + idx_cols,
+        outputCol="features",
+        handleInvalid="skip",
+    )
+
+    # 5) Train/test split
+    train_df, test_df = ml_df.randomSplit([0.8, 0.2], seed=42)
+    print(f"Training set: {train_df.count()} records")
+    print(f"Test set: {test_df.count()} records")
+
+    # 6) Random Forest binary classifier
+    rf = RandomForestClassifier(
+        labelCol="label",
+        featuresCol="features",
+        numTrees=60,
+        maxDepth=10,
+        maxBins=MAX_BINS,
+        featureSubsetStrategy="sqrt",
+        subsamplingRate=0.7,
+        minInstancesPerNode=30,
+        seed=42,
+    )
+
+    pipeline = Pipeline(stages=indexers + [assembler, rf])
+
+    print("Training Random Forest (domestic incident prediction)...")
+    model = pipeline.fit(train_df)
+    print("Model training complete.")
+
+    # Predict on test set
+    print("Making predictions on test set...")
+    predictions = model.transform(test_df)
+
+    # 7) Evaluate metrics
+    print("Evaluating model performance...")
+
+    evaluator_acc = MulticlassClassificationEvaluator(
+        labelCol="label", predictionCol="prediction", metricName="accuracy"
+    )
+    evaluator_f1 = MulticlassClassificationEvaluator(
+        labelCol="label", predictionCol="prediction", metricName="f1"
+    )
+    evaluator_auc = BinaryClassificationEvaluator(
+        labelCol="label", rawPredictionCol="rawPrediction", metricName="areaUnderROC"
+    )
+
+    accuracy = evaluator_acc.evaluate(predictions)
+    f1 = evaluator_f1.evaluate(predictions)
+    auc = evaluator_auc.evaluate(predictions)
+
+    print("\n" + "=" * 50)
+    print("DOMESTIC INCIDENT MODEL PERFORMANCE")
+    print("=" * 50)
+    print(f"Accuracy: {accuracy:.4f}")
+    print(f"F1 Score: {f1:.4f}")
+    print(f"AUC:      {auc:.4f}")
+    print("=" * 50 + "\n")
+
+    # 8) Feature importance
+    print("Computing feature importance...")
+
+    rf_model = model.stages[-1]
+    importances = rf_model.featureImportances
+
+    attrs = predictions.schema["features"].metadata["ml_attr"]["attrs"]
+    idx2name = {}
+    for attr_group in attrs.values():
+        for attr in attr_group:
+            idx2name[attr["idx"]] = attr["name"]
+
+    feature_importance = [
+        (idx2name[i], float(importances[i]))
+        for i in range(len(importances))
+        if float(importances[i]) > 0
+    ]
+
+    importance_df = (
+        spark.createDataFrame(feature_importance, ["feature", "importance"])
+        .orderBy(F.desc("importance"))
+    )
+
+    importance_df.show(15, truncate=False)
+
+    # 9) Save metrics and feature importance to MongoDB
+    print("Saving metrics to MongoDB...")
+
+    importance_list = [
+        {"feature": row["feature"], "importance": float(row["importance"])}
+        for row in importance_df.collect()
+    ]
+
+    # Binary labels: 0=Non-Domestic, 1=Domestic
+    label_classes = ["Non-Domestic", "Domestic"]
+
+    results_doc = {
+        "model_type": "RandomForestClassifier",
+        "task_type": "domestic_incident_prediction",
+        "label_col": "is_domestic_incident",
+        "label_classes": label_classes,
+        "created_at": datetime.utcnow().isoformat(),
+        "metrics": {
+            "accuracy": float(accuracy),
+            "f1": float(f1),
+            "auc": float(auc),
+        },
+        "training_records": train_df.count(),
+        "test_records": test_df.count(),
+        "feature_importance": importance_list,
+        "sample_fraction": SAMPLE_FRACTION,
+    }
+
+    mongo_uri = "mongodb://admin:admin123@mongodb:27017/?authSource=admin"
+    client = pymongo.MongoClient(mongo_uri)
+    db = client["crime_analysis"]
+    collection = db["ml_results"]
+    collection.insert_one(results_doc)
+    client.close()
+    print("Domestic-incident model results saved to MongoDB (crime_analysis.ml_results)")
+
+    # 10) Add prediction fields and probabilities
+    predictions = predictions.withColumn(
+        "predicted_is_domestic",
+        F.col("prediction").cast(DoubleType())
+    )
+
+    predictions = predictions.withColumn(
+        "predicted_domestic_str",
+        F.when(F.col("prediction") == 1.0, F.lit("Domestic")).otherwise(F.lit("Non-Domestic"))
+    )
+
+    preds_with_array = predictions.withColumn(
+        "prob_array", vector_to_array("probability")
+    )
+
+    # Probability of label=1 (Domestic) is at index 1
+    def prob_domestic(prob_list):
+        if prob_list is None or len(prob_list) < 2:
+            return None
+        return float(prob_list[1])
+
+    prob_domestic_udf = F.udf(prob_domestic, DoubleType())
+
+    preds_with_array = preds_with_array.withColumn(
+        "prob_domestic",
+        prob_domestic_udf("prob_array")
+    )
+
+    sample_rows = (
+        preds_with_array
+        .select(
+            "crime_datetime",
+            "District",
+            "location_category",
+            "Location Description",
+            "crime_hour",
+            "crime_day_of_week",
+            "crime_month",
+            "is_domestic_incident",
+            "predicted_is_domestic",
+            "predicted_domestic_str",
+            "prob_domestic",
+        )
+        .limit(20)
+    )
+
+    print("\nSample predictions (Domestic vs Non-Domestic):")
+    sample_rows.show(truncate=False)
+
+    # 11) Write full predictions to HDFS
+    print("\nSaving full predictions to HDFS...")
+
+    output_cols = [
+        "ID",
+        "crime_datetime",
+        "District",
+        "Community_Area",
+        "Location Description",
+        "location_category",
+        "crime_hour",
+        "crime_day_of_week",
+        "crime_month",
+        "time_of_day",
+        "season",
+        "is_domestic_incident",
+        "predicted_is_domestic",
+        "predicted_domestic_str",
+        "probability",
+        "prob_domestic",
+    ]
+    existing_cols = [c for c in output_cols if c in preds_with_array.columns]
+
+    (
+        preds_with_array.select(*existing_cols)
+        .write.mode("overwrite")
+        .parquet(RESULTS_PATH)
+    )
+
+    print(f"Domestic-incident predictions saved to {RESULTS_PATH}")
+
+    spark.stop()
+    print("\nDomestic incident prediction pipeline complete!")
+
+
+if __name__ == "__main__":
+    main()

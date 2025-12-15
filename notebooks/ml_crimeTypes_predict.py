@@ -19,8 +19,16 @@ def build_spark():
         SparkSession.builder
         .appName("ChicagoCrimeTypeML")
         .master("spark://spark-master:7077")
-        # 减少 shuffle task 的内存压力
-        .config("spark.sql.shuffle.partitions", "64")
+        # Executor resources
+        .config("spark.executor.memory", "3g")
+        .config("spark.executor.cores", "2")
+        .config("spark.executor.instances", "2")
+        # Driver resources
+        .config("spark.driver.memory", "2g")
+        # SQL shuffle settings
+        .config("spark.sql.shuffle.partitions", "128")
+        # Memory tuning
+        .config("spark.memory.fraction", "0.6")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -35,9 +43,7 @@ def load_processed(spark):
 def main():
     spark = build_spark()
 
-    # -------------------------------------------------
-    # 1. 读取处理好的数据
-    # -------------------------------------------------
+    # 1) Load processed data
     df = load_processed(spark)
     total_count = df.count()
     print(f"Loaded {total_count} records from {PROCESSED_PATH}")
@@ -45,20 +51,16 @@ def main():
     print("Columns in processed df:")
     print(df.columns)
 
-    # -------------------------------------------------
-    # 2. 选择本任务需要的列
-    #    Label: crime_category（多分类）
-    #    特征：时间 + 地点 + 条件（简化后的版本）
-    # -------------------------------------------------
+    # 2) Select features and label for ML
     ml_df = df.select(
         "ID",
         "crime_datetime",
-        # 把 District / Community Area 直接 cast 成数值列，避免作为大类别特征
+        # Cast District / Community Area to numeric to avoid high-cardinality categorical splits
         F.col("District").cast(DoubleType()).alias("District"),
         F.col("Community Area").cast(DoubleType()).alias("Community_Area"),
         "Location Description",
         "location_category",
-        "crime_category",          # label
+        "crime_category",
         "crime_hour",
         "crime_day_of_week",
         "crime_month",
@@ -72,7 +74,19 @@ def main():
         "is_public_space",
     )
 
-    # 基础必需列不能是 null
+    ml_df = ml_df.withColumn(
+        "is_weekend",
+        F.when(F.col("crime_day_of_week").isin(0, 6), 1.0).otherwise(0.0)
+    )
+
+    ml_df = ml_df.withColumn(
+        "is_work_hour",
+        F.when((F.col("crime_hour") >= 8) & (F.col("crime_hour") <= 18), 1.0).otherwise(0.0)
+    )
+
+    ml_df = ml_df.withColumn("District_str", F.col("District").cast(StringType()))
+
+    # Drop rows with nulls in required columns
     ml_df = ml_df.na.drop(
         subset=[
             "crime_category",
@@ -84,62 +98,77 @@ def main():
         ]
     )
 
-    # 布尔列转 double
+    # Cast boolean-like columns to double
     bool_cols = [
         "is_night",
         "is_domestic_incident",
         "is_public_space",
+        "is_weekend",
+        "is_work_hour",
     ]
     for c in bool_cols:
         if c in ml_df.columns:
             ml_df = ml_df.withColumn(c, F.col(c).cast(DoubleType()))
 
-    # 数值特征列（包含 District / Community_Area）
+    # Numeric feature columns
     numeric_cols = [
         "crime_hour",
-        "crime_day_of_week",
-        "crime_month",
         "location_risk_weight",
         "Latitude",
         "Longitude",
-        "District",
         "Community_Area",
-        "is_night",
         "is_domestic_incident",
         "is_public_space",
+        "is_weekend",
     ]
-    # 数值列中的 null 全部填成 0，避免 VectorAssembler 报错
+
+    # Fill nulls in numeric columns to avoid VectorAssembler errors
     ml_df = ml_df.na.fill(0.0, subset=numeric_cols)
 
-    # -------------------------------------------------
-    # ⭐ 关键降内存手段 1：对整体数据做采样
-    # -------------------------------------------------
-    SAMPLE_FRACTION = 1.0  # 可根据内存再调小一点，比如 0.3
+    # 3) Sample to reduce memory pressure
+    SAMPLE_FRACTION = 0.7
     sampled_total = int(total_count * SAMPLE_FRACTION)
 
     ml_df = ml_df.sample(withReplacement=False, fraction=SAMPLE_FRACTION, seed=42)
     print(f"Using a {SAMPLE_FRACTION*100:.1f}% sample for crime-type model:")
     print(f"Sampled records: {ml_df.count()} (out of {total_count})")
 
-    # -------------------------------------------------
-    # 3. 类别特征编码 + Label 编码
-    #    只保留少量类别特征，避免高基数 categorical split
-    # -------------------------------------------------
+    TOP_N_LOC_DESC = 20
+
+    top_loc_rows = (
+        ml_df.groupBy("Location Description")
+            .count()
+            .orderBy(F.desc("count"))
+            .limit(TOP_N_LOC_DESC)
+            .collect()
+    )
+    top_loc_desc = [r["Location Description"] for r in top_loc_rows]
+    print("Top location descriptions:", top_loc_desc)
+
+    # Keep top-N location descriptions; map the rest to OTHER
+    ml_df = ml_df.withColumn(
+        "loc_desc_topN",
+        F.when(
+            F.col("Location Description").isin(top_loc_desc),
+            F.col("Location Description")
+        ).otherwise(F.lit("OTHER"))
+    )
+
+    # 4) Encode categorical features and label
     MAX_BINS = 64
 
-    # Label：crime_category -> label（多分类）
     label_indexer = StringIndexer(
         inputCol="crime_category",
         outputCol="label",
         handleInvalid="skip",
     )
 
-    # 仅保留少量低基数类别特征
     all_cat_cols_info = [
         ("time_of_day", "time_of_day_idx"),
         ("season", "season_idx"),
         ("location_category", "location_category_idx"),
-        # 不再对 District / Community_Area 做 StringIndexer
+        ("District_str", "District_idx"),
+        ("loc_desc_topN", "loc_desc_idx"),
     ]
 
     cat_cols_info = []
@@ -152,9 +181,7 @@ def main():
         if distinct_cnt <= MAX_BINS:
             cat_cols_info.append((input_col, output_col))
         else:
-            print(
-                f"  -> Skip {input_col} because distinct {distinct_cnt} > MAX_BINS ({MAX_BINS})"
-            )
+            print(f"  -> Skip {input_col} because distinct {distinct_cnt} > MAX_BINS ({MAX_BINS})")
 
     print("\n[Will use categorical columns]:", [c for c, _ in cat_cols_info])
 
@@ -175,24 +202,21 @@ def main():
         handleInvalid="skip",
     )
 
-    # -------------------------------------------------
-    # 4. Train/Test 划分（在采样后数据上 80/20）
-    # -------------------------------------------------
+    # 5) Train/test split
     train_df, test_df = ml_df.randomSplit([0.8, 0.2], seed=42)
     print(f"Training set: {train_df.count()} records")
     print(f"Test set: {test_df.count()} records")
 
-    # -------------------------------------------------
-    # 5. 定义 RF 多分类模型（降内存版本）
-    # -------------------------------------------------
+    # 6) Random Forest model
     rf = RandomForestClassifier(
         labelCol="label",
         featuresCol="features",
-        numTrees=30,          # 从 60 降到 30
-        maxDepth=8,           # 从 10 降到 8
-        maxBins=MAX_BINS,     # 64
+        numTrees=60,
+        maxDepth=10,
+        maxBins=MAX_BINS,
         featureSubsetStrategy="sqrt",
-        subsamplingRate=0.5,  # 每棵树只用 50% 样本
+        subsamplingRate=0.7,
+        minInstancesPerNode=30,
         seed=42,
     )
 
@@ -202,13 +226,11 @@ def main():
     model = pipeline.fit(train_df)
     print("Model training complete.")
 
-    # 在测试集上预测
+    # Predict on test set
     print("Making predictions on test set...")
     predictions = model.transform(test_df)
 
-    # -------------------------------------------------
-    # 6. 评估指标：Accuracy / F1（多分类）
-    # -------------------------------------------------
+    # 7) Evaluate metrics
     print("Evaluating model performance...")
 
     evaluator_acc = MulticlassClassificationEvaluator(
@@ -232,9 +254,7 @@ def main():
     print(f"F1 Score: {f1:.4f}")
     print("=" * 50 + "\n")
 
-    # -------------------------------------------------
-    # 7. 特征重要性
-    # -------------------------------------------------
+    # 8) Feature importance
     print("Computing feature importance...")
 
     rf_model = model.stages[-1]
@@ -259,9 +279,7 @@ def main():
 
     importance_df.show(15, truncate=False)
 
-    # -------------------------------------------------
-    # 8. 把指标 & 特征重要性写入 MongoDB
-    # -------------------------------------------------
+    # 9) Save metrics and feature importance to MongoDB
     print("Saving metrics to MongoDB...")
 
     importance_list = [
@@ -269,7 +287,6 @@ def main():
         for row in importance_df.collect()
     ]
 
-    # label 映射（index -> crime_category 名字）
     label_indexer_model = model.stages[0]
     label_classes = list(label_indexer_model.labels)
 
@@ -297,9 +314,7 @@ def main():
     client.close()
     print("Crime-type model results saved to MongoDB (crime_analysis.ml_results)")
 
-    # -------------------------------------------------
-    # 9. 预测结果：加上可读的预测类别 + Top-3 候选
-    # -------------------------------------------------
+    # 10) Add readable predicted label and top-3 candidates
     mapping_dict = {i: label for i, label in enumerate(label_classes)}
 
     def idx_to_label(idx):
@@ -340,18 +355,16 @@ def main():
             "crime_hour",
             "crime_day_of_week",
             "crime_month",
-            "crime_category",             # 真实
-            "predicted_crime_category",   # 预测 Top-1
-            "top3_candidates",            # Top-3 + 概率
+            "crime_category",
+            "predicted_crime_category",
+            "top3_candidates",
         )
         .limit(20)
     )
 
     sample_top3.show(truncate=False)
 
-    # -------------------------------------------------
-    # 10. 把完整预测结果写回 HDFS
-    # -------------------------------------------------
+    # 11) Write full predictions to HDFS
     print("\nSaving full predictions to HDFS...")
 
     output_cols = [
@@ -366,9 +379,9 @@ def main():
         "crime_month",
         "time_of_day",
         "season",
-        "crime_category",            # 真实 label
-        "predicted_crime_category",  # 预测 label
-        "probability",               # 所有类别的概率分布
+        "crime_category",
+        "predicted_crime_category",
+        "probability",
     ]
     existing_cols = [c for c in output_cols if c in predictions.columns]
 
