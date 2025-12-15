@@ -38,41 +38,6 @@ def fetch_geojson():
     r.raise_for_status()
     return r.json()
 
-
-def infer_area_key(geojson_obj):
-    """
-    Find the property field containing the Community Area number.
-    Usually one of: area_numbe / area_num_1 / area_num
-    """
-    props = geojson_obj["features"][0].get("properties", {})
-    keys = list(props.keys())
-
-    candidates = ["area_numbe", "area_num_1", "area_num", "comarea", "community_area"]
-    for c in candidates:
-        if c in keys:
-            return c
-
-    # fallback heuristic
-    for k in keys:
-        lk = k.lower()
-        if ("area" in lk) and (("num" in lk) or ("no" in lk)):
-            return k
-
-    raise ValueError("Could not infer Community Area key from GeoJSON properties keys: {0}".format(keys))
-
-
-def infer_name_key(geojson_obj):
-    """
-    Find the community area name field (often 'community').
-    """
-    props = geojson_obj["features"][0].get("properties", {})
-    keys = list(props.keys())
-    for k in ["community", "name", "community_area_name"]:
-        if k in keys:
-            return k
-    return None
-
-
 def aggregate_counts(spark):
     df = spark.read.parquet(PARQUET_PATH)
 
@@ -185,16 +150,11 @@ def main():
     print("Loading boundaries from:", GEOJSON_URL)
     geo = fetch_geojson()
 
-    area_key = infer_area_key(geo)
-    name_key = infer_name_key(geo)
-    print("GeoJSON keys -> area:", area_key, "| name:", name_key)
+    geo = add_counts_to_geojson(geo, "area_numbe", counts_pd)
 
-    geo = add_counts_to_geojson(geo, area_key, counts_pd)
-
-    m = build_map(geo, area_key, name_key, counts_pd)
+    m = build_map(geo, "area_numbe", "community", counts_pd)
     m.save(OUT_HTML)
     print("Saved map HTML to:", OUT_HTML)
-
 
 if __name__ == "__main__":
     main()

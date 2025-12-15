@@ -214,7 +214,7 @@ services:
       - PYSPARK_PYTHON=python3
       - PYSPARK_DRIVER_PYTHON=python3
     volumes:
-      - ./notebooks:/home/jovyan/work
+      - ./notebooks:/home/jovyan/notebooks
       - ./data:/home/jovyan/data
       - ./spark-apps:/home/jovyan/spark-apps
     networks:

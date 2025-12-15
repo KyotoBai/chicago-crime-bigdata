@@ -3,7 +3,7 @@ NOTE!!!!: the folder or file marked using [NONE] are not in current project file
 # Proeject Ideally Structure
 
 ```
-project-root/
+chicago-crime-bigdata/
 │
 ├── docker-compose.yml
 ├── hadoop.env
@@ -11,6 +11,9 @@ project-root/
 │
 ├── data/                           # Raw input data (mounted to containers)
 │   └── chicago_crimes.csv          # Downloaded from Kaggle
+│
+├── dockerfiles/jupyter 
+│   └── chicago_crimes.csv 
 │
 ├── notebooks/                      # Jupyter notebooks (your code)
 │   ├── .ipynb [NONE]
@@ -28,12 +31,8 @@ project-root/
 │       ├── .png
 │       └── crime_heatmap.html
 │
-├── spark-apps/                     # Spark application scripts
-│   └── batch_jobs/ [NONE]                # For production Spark jobs
-│
-└── spark-data/                     # Temporary Spark data
-    ├── checkpoints/[NONE]
-    └── temp/      [NONE]
+└── spark-apps/                     # Spark application scripts
+    └── batch_jobs/ [NONE]                # For production Spark jobs
 ```
 
 # HDFS Ideally Structure
