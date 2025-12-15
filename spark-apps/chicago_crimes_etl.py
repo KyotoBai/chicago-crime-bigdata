@@ -11,7 +11,6 @@ from pyspark.sql.functions import udf
 RAW_PATH = "hdfs://namenode:9000/data/raw/chicago_crimes.parquet"
 PROCESSED_PATH = "hdfs://namenode:9000/data/processed/chicago_crimes_clean.parquet"
 
-
 def build_spark():
     spark = (
         SparkSession.builder
@@ -67,50 +66,47 @@ def clean_data(df):
 
 
 def add_time_features(df):
-    # Parse Date string into timestamp (Chicago dataset style)
     df = df.withColumn(
         "crime_datetime",
-        F.to_timestamp(F.col("Date"), "MM/dd/yyyy hh:mm:ss a"),
+        F.coalesce(
+            F.to_timestamp(F.col("Date"), "MM/dd/yyyy hh:mm:ss a"),
+            F.to_timestamp(F.col("Date"), "yyyy-MM-dd'T'HH:mm:ss.SSS"),
+            F.to_timestamp(F.col("Date"), "yyyy-MM-dd'T'HH:mm:ss"),
+        ),
     )
 
-    # Drop rows where parse failed
     df = df.dropna(subset=["crime_datetime"])
 
-    # Time components
     df = (
         df.withColumn("crime_year", F.year("crime_datetime"))
-        .withColumn("crime_month", F.month("crime_datetime"))
-        .withColumn("crime_day", F.dayofmonth("crime_datetime"))
-        .withColumn("crime_hour", F.hour("crime_datetime"))
-        .withColumn("crime_day_of_week", F.dayofweek("crime_datetime"))
+          .withColumn("crime_month", F.month("crime_datetime"))
+          .withColumn("crime_day", F.dayofmonth("crime_datetime"))
+          .withColumn("crime_hour", F.hour("crime_datetime"))
+          .withColumn("crime_day_of_week", F.dayofweek("crime_datetime"))
     )
 
-    # Keep Year consistent with parsed year
     df = df.withColumn(
         "Year",
         F.when(F.col("crime_year").isNotNull(), F.col("crime_year"))
-        .otherwise(F.col("Year"))
-        .cast(IntegerType()),
+         .otherwise(F.col("Year"))
+         .cast(IntegerType()),
     )
 
-    # Time-of-day buckets
     df = df.withColumn(
         "time_of_day",
         F.when((F.col("crime_hour") >= 5) & (F.col("crime_hour") < 12), "MORNING")
-        .when((F.col("crime_hour") >= 12) & (F.col("crime_hour") < 17), "AFTERNOON")
-        .when((F.col("crime_hour") >= 17) & (F.col("crime_hour") < 22), "EVENING")
-        .otherwise("NIGHT"),
+         .when((F.col("crime_hour") >= 12) & (F.col("crime_hour") < 17), "AFTERNOON")
+         .when((F.col("crime_hour") >= 17) & (F.col("crime_hour") < 22), "EVENING")
+         .otherwise("NIGHT"),
     )
 
-    # Season
     df = df.withColumn(
         "season",
         F.when(F.col("crime_month").isin(12, 1, 2), "WINTER")
-        .when(F.col("crime_month").isin(3, 4, 5), "SPRING")
-        .when(F.col("crime_month").isin(6, 7, 8), "SUMMER")
-        .otherwise("FALL"),
+         .when(F.col("crime_month").isin(3, 4, 5), "SPRING")
+         .when(F.col("crime_month").isin(6, 7, 8), "SUMMER")
+         .otherwise("FALL"),
     )
-
     return df
 
 
