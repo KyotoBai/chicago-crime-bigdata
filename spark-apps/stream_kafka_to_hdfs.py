@@ -9,7 +9,7 @@ spark = (
     .master("spark://spark-master:7077") # Spark master
     # Kafka Structured Streaming connector
     .config("spark.jars.packages","org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0")
-    .config("spark.sql.shuffle.partitions", "64")
+    .config("spark.sql.shuffle.partitions", "200")
     .config("spark.executor.memory", "3g")
     .getOrCreate()
 )

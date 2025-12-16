@@ -17,7 +17,7 @@ def build_spark():
         .appName("ChicagoCrimeETL")
         .master("spark://spark-master:7077")
         # bigger partition, more parallel tasks, less memory per task
-        .config("spark.sql.shuffle.partitions", "64")
+        .config("spark.sql.shuffle.partitions", "200")
         # prevent small filesize causing HDFS small files problem
         .config("spark.sql.files.maxRecordsPerFile", "500000")
         .config("spark.executor.memory", "3g")
