@@ -9,6 +9,7 @@ spark = (
     .master("spark://spark-master:7077") # Talk to Spark master
     # Add Kafka Structured Streaming connector
     .config("spark.jars.packages","org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0")
+    .config("spark.executor.memory", "3g")
     .getOrCreate()
 )
 
@@ -118,7 +119,7 @@ out = p_api.select(
 
 # 4. Write to HDFS as Parquet
 output_path = "hdfs://namenode:9000/data/raw/chicago_crimes.parquet"
-checkpoint_path = "hdfs://namenode:9000/user/jovyan/checkpoint/chicago_crime_stream"
+checkpoint_path = "hdfs://namenode:9000/user/spark-checkpoint/chicago_crime_stream"
 
 query = (
     out.writeStream
