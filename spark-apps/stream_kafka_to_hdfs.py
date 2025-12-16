@@ -2,13 +2,14 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, coalesce, to_json
 from pyspark.sql.types import StructType, StringType, StructField
 
-# 1. SparkSession talking to the Spark master container
+# SparkSession that talking to the Spark master container
 spark = (
     SparkSession.builder
     .appName("ChicagoCrimeKafkaToHDFS")
-    .master("spark://spark-master:7077") # Talk to Spark master
-    # Add Kafka Structured Streaming connector
+    .master("spark://spark-master:7077") # Spark master
+    # Kafka Structured Streaming connector
     .config("spark.jars.packages","org.apache.spark:spark-sql-kafka-0-10_2.12:3.3.0")
+    .config("spark.sql.shuffle.partitions", "64")
     .config("spark.executor.memory", "3g")
     .getOrCreate()
 )

@@ -16,10 +16,11 @@ def build_spark():
         SparkSession.builder
         .appName("ChicagoCrimeETL")
         .master("spark://spark-master:7077")
-        # More, smaller shuffle partitions to reduce memory per task
+        # bigger partition, more parallel tasks, less memory per task
         .config("spark.sql.shuffle.partitions", "64")
-        # Keep files reasonably small
-        .config("spark.sql.files.maxRecordsPerFile", "250000")
+        # prevent small filesize causing HDFS small files problem
+        .config("spark.sql.files.maxRecordsPerFile", "500000")
+        .config("spark.executor.memory", "3g")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -110,9 +111,14 @@ def add_time_features(df):
     return df
 
 
-# ---------- Location category & weight UDFs ----------
-
-
+# ---------- Location category ----------
+# Residential (house, appartment...)
+# Transportation (roads, transit, vehicles, airports...)
+# Food & Entertainment (bar, casino, club...)
+# Commercial (retail, offices, services, banks...)
+# Institutional (schools, hospitals, govt, police, fire...)
+# Public Outdoor (streets, parks...)
+# Other
 def _location_category(loc: str) -> str:
     if not loc:
         return "Other"
@@ -257,7 +263,6 @@ def _location_category(loc: str) -> str:
         return "Public Outdoor"
 
     return "Other"
-
 
 def _location_weight(category: str) -> int:
     if category == "Public Outdoor":
@@ -454,12 +459,12 @@ def add_crime_features(df):
     )
 
     # ---- Normalize risk_score_raw to [1, 10] ----
-    # Theoretical min/max given the weights:
-    #  min_raw = 1 (crime low) + 1 (location low) = 2.0
-    #  max_raw = 10 (crime high) + 3 (location high) + 2 + 1.5 + 1 = 17.5
+    #  min/max given the weights:
+    #  min_raw = 1 (crime lv1) + 1 (location low) = 2.0
+    #  max_raw = 10 (crime lv3) + 3 (location high) + 2 + 1.5 + 1 = 17.5
     min_raw = 2.0
     max_raw = 17.5
-    scale = 9.0 / (max_raw - min_raw)  # 1..10 range → 9 units above 1
+    scale = 9.0 / (max_raw - min_raw)  # 1..10 range
 
     df = df.withColumn(
         "risk_score",

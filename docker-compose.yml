@@ -111,7 +111,6 @@ services:
     environment:
       - SPARK_MASTER=spark://spark-master:7077
       - SPARK_WORKER_MEMORY=4g    # 4G for each worker 
-      - SPARK_WORKER_CORES=2     # 2 cores for each worker
     volumes:
       - ./spark-apps:/opt/spark-apps
       - ./spark-data:/opt/spark-data
@@ -129,7 +128,6 @@ services:
     environment:
       - SPARK_MASTER=spark://spark-master:7077
       - SPARK_WORKER_MEMORY=4g   # 4G for each worker  
-      - SPARK_WORKER_CORES=2     # 2 cores for each worker
     volumes:
       - ./spark-apps:/opt/spark-apps
       - ./spark-data:/opt/spark-data
