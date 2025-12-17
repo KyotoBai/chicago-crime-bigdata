@@ -21,8 +21,8 @@ Run each file in the order:
 2. `stream_kafka_to_hdfs.py`
 
 Note: kafka_producer.py **DEFAULT** get all data from API, not CSV \
-IF you want to use CSV file to speed up data ingestion, place the CVS file inside of `/data` folder, then run `kafka_producer.py --mode csv` \
-- CSV file could be found at `https://www.kaggle.com/datasets/har5hdeep5harma/chicago-crime-incidents-2001-to-present`
+IF you want to use CSV file to speed up data ingestion, place the CVS file inside of `/data` folder, then run `kafka_producer.py --mode csv`
+- CSV file could be found at `https://www.kaggle.com/datasets/har5hdeep5harma/chicago-crime-incidents-2001-to-present`\
 IF you want to get the newest data, use `kafka_producer.py --mode incremental` \
 IF you want to get the newest data automatically, use `kafka_producer.py --mode continuous`
 
