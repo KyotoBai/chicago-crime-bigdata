@@ -31,7 +31,19 @@ Run `chicago_crimes_etl.py`
 
 # ML
 Open folder `/notebooks`\
-Run `ml_crimeTypes_predict.py`, `ml_domestic_predict.py`, `ml_isArrested_predict.py`
+Run `ml_crimeTypes_predict.py`, `ml_domestic_predict.py`
+Instructions offered belloww:
+```shell
+# Enter jupyter container
+docker compose exec jupyter bash
+
+# Enter the work folder
+cd /home/jovyan/work
+
+# Run the ML scripts
+python ml_crimeTypes_predict.py.py
+python ml_domestic_predict.py
+```
 
 # Analysis and Visualization
 Open folder `/notebooks`\
