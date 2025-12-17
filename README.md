@@ -3,10 +3,10 @@ Analysis and Predictive Modeling of Crime in Chicago (2001–Present)
 - Bigdata Final Project for NYU Tandon Bigdata
 
 # Team Member
-Yuchen Liu
-Haoyang Lin
-Han Wen
-Leile Zhang
+Yuchen Liu\
+Haoyang Lin\
+Han Wen\
+Leile Zhang\
 
 # Instructions
 1. Download all the project files
