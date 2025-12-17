@@ -1,10 +1,3 @@
-# chicago_crime_choropleth_noargs_py37.py
-# Python 3.7 script (no CLI args) that:
-#  1) reads your processed crimes parquet from HDFS
-#  2) aggregates crime counts by Community Area
-#  3) downloads Chicago "Boundaries - Community Areas" GeoJSON (igwz-8jzy)
-#  4) builds an interactive choropleth map (HTML)
-
 from __future__ import print_function
 
 import json
@@ -16,7 +9,7 @@ from folium.features import GeoJsonTooltip
 from pyspark.sql import SparkSession, functions as F
 
 PARQUET_PATH = "hdfs://namenode:9000/data/processed/chicago_crimes_clean.parquet"
-
+# Chicago community areas boundary GeoJSON (Socrata endpoint)
 GEOJSON_URL = "https://data.cityofchicago.org/resource/igwz-8jzy.geojson"
 
 OUT_HTML = "chicago_crimes_choropleth.html"
@@ -33,12 +26,19 @@ def build_spark():
 
 
 def fetch_geojson():
+    """
+    Download boundary GeoJSON from the City of Chicago open-data endpoint.
+    """
     headers = {"User-Agent": "Mozilla/5.0 (compatible; bigdata-project/1.0)"}
     r = requests.get(GEOJSON_URL, headers=headers, timeout=60)
     r.raise_for_status()
     return r.json()
 
 def aggregate_counts(spark):
+    """
+    Read parquet from HDFS and compute total crime counts per community area.
+    Output is converted to pandas (small aggregation result; safe to bring to driver).
+    """
     df = spark.read.parquet(PARQUET_PATH)
 
     # Use crime_year if present (else Year)
@@ -58,6 +58,7 @@ def aggregate_counts(spark):
         .orderBy(F.col("crime_count").desc())
     )
 
+    # Convert to pandas for folium
     return counts.toPandas()
 
 
@@ -90,7 +91,7 @@ def compute_bins(counts_pd):
     """
     s = counts_pd["crime_count"].astype(float)
     qs = s.quantile([0.0, 0.2, 0.4, 0.6, 0.8, 1.0]).tolist()
-    # ensure strictly increasing bins (folium requires it)
+    # ensure strictly increasing bins
     bins = sorted(list(set([int(round(x)) for x in qs])))
     if len(bins) < 3:
         # fallback
@@ -102,10 +103,15 @@ def compute_bins(counts_pd):
 
 
 def build_map(geojson_obj, area_key, name_key, counts_pd):
+    # Chicago center coordinates
     m = folium.Map(location=[41.8781, -87.6298], zoom_start=10, tiles=MAP_TILES)
 
     bins = compute_bins(counts_pd)
 
+    # Choropleth layer:
+    # - geo_data: boundaries
+    # - data/columns: join data (community_area -> crime_count)
+    # - key_on: which property in geojson contains the join key (area_key)
     folium.Choropleth(
         geo_data=geojson_obj,
         data=counts_pd,

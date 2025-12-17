@@ -12,7 +12,7 @@ Leile Zhang
 1. Download all the project files
 2. Run `docker-compose build` in folder
 3. Start by using `docker-compose up -d`
-4. Open jupyter at `localhost:8888`
+4. Open JupyterLab at `localhost:8888` for code execution
 
 # Data Ingestion
 Open folder `/spark-apps` \
@@ -22,6 +22,7 @@ Run each file in the order:
 
 Note: kafka_producer.py **DEFAULT** get all data from API, not CSV \
 IF you want to use CSV file to speed up data ingestion, place the CVS file inside of `/data` folder, then run `kafka_producer.py --mode csv` \
+- CSV file could be found at `https://www.kaggle.com/datasets/har5hdeep5harma/chicago-crime-incidents-2001-to-present`
 IF you want to get the newest data, use `kafka_producer.py --mode incremental` \
 IF you want to get the newest data automatically, use `kafka_producer.py --mode continuous`
 

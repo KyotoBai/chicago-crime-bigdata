@@ -10,7 +10,7 @@ from kafka import KafkaProducer
 import requests
 
 
-# ---------------- Defaults (edit here if needed) ----------------
+# ---------------- Defaults ----------------
 DEFAULT_API_ENDPOINT = "https://data.cityofchicago.org/resource/ijzp-q8t2.json"
 DEFAULT_TOPIC = "chicago-crime-stream"
 DEFAULT_BOOTSTRAP_SERVERS = ["kafka:9092"]
@@ -18,7 +18,7 @@ DEFAULT_BOOTSTRAP_SERVERS = ["kafka:9092"]
 DEFAULT_BATCH_SIZE = 50000
 DEFAULT_FLUSH_EVERY = 10000
 
-# overlap window on updated_on (duplicates OK; ETL can dedup)
+# overlap window on updated_on (duplicates OK because ETL can dedup)
 DEFAULT_LOOKBACK_HOURS = 0
 
 # for continuous mode
@@ -29,7 +29,9 @@ DEFAULT_CSV_PATH = "/home/jovyan/data/Chicago_Crimes_2001_to_Present.csv"
 
 
 def parse_dt_flexible(s: str):
-    """Parse ISO / CSV-ish datetimes into naive datetime (no tz)."""
+    """Parse ISO / CSV-ish datetimes into naive datetime (no tz). Returns None if parse fails."""
+    # Supports multiple formats:
+    # - Chicago CSV "MM/DD/YYYY hh:mm:ss AM/PM"
     if not s:
         return None
     s = str(s).strip()
@@ -67,7 +69,7 @@ class ChicagoCrimeAPIProducer:
       ORDER BY updated_on ASC, id ASC
       WHERE (updated_on > cursor_u) OR (updated_on = cursor_u AND id > cursor_id)
 
-    Incremental uses rollback window on updated_on (duplicates OK).
+    Incremental uses rollback window on updated_on
     """
 
     def __init__(self):
@@ -95,6 +97,7 @@ class ChicagoCrimeAPIProducer:
     # ---------------- Watermark (updated_on + id) ----------------
 
     def get_last_watermark(self):
+        """Load the last saved cursor from local JSON file; return None/empty if not found."""
         try:
             with open(self.watermark_file, "r") as f:
                 data = json.load(f)
@@ -105,9 +108,11 @@ class ChicagoCrimeAPIProducer:
             return {"last_updated_on": None, "last_id": ""}
 
     def save_watermark(self, last_updated_on, last_id):
+        """Persist watermark locally so incremental mode can resume after restarts."""
         if last_updated_on is None:
             return
         if isinstance(last_updated_on, datetime):
+            # Normalize to a simple ISO-like string without timezone
             last_updated_on = last_updated_on.strftime("%Y-%m-%dT%H:%M:%S")
         else:
             last_updated_on = str(last_updated_on)
@@ -118,9 +123,13 @@ class ChicagoCrimeAPIProducer:
         with open(self.watermark_file, "w") as f:
             json.dump({"last_updated_on": last_updated_on, "last_id": last_id}, f)
 
-    # ---------------- API fetch (deterministic order) ----------------
-
+    # ---------------- API fetch ----------------
     def fetch_data(self, where_clause=None, limit=None, max_retries=8):
+        """
+        Fetch one page of records from Socrata.
+        - Uses deterministic ordering to support cursor paging.
+        - Retries on 429 rate-limit and timeouts with exponential backoff + jitter.
+        """
         params = {
             "$limit": limit or self.batch_size,
             "$order": "updated_on ASC, id ASC",
@@ -131,8 +140,10 @@ class ChicagoCrimeAPIProducer:
         last_err = None
         for attempt in range(1, max_retries + 1):
             try:
+                # timeout=(connect, read)
                 r = self.session.get(self.api_endpoint, params=params, timeout=(10, 240))
 
+                # Socrata rate limiting
                 if r.status_code == 429:
                     wait = min(120, 2 ** attempt) + random.random()
                     print(f"[WARN] 429 rate limited. Sleep {wait:.1f}s then retry...")
@@ -157,12 +168,15 @@ class ChicagoCrimeAPIProducer:
         return []
 
     def _where_after_cursor(self, cursor_u, cursor_id):
+        """
+        Build a stable SoQL cursor filter:
+        - (updated_on > cursor_u) OR (updated_on == cursor_u AND id > cursor_id)
+        """
         cu = str(cursor_u).replace("'", "''")
         id_lit = soql_id_literal(cursor_id)
         return f"(updated_on > '{cu}') OR (updated_on = '{cu}' AND id > {id_lit})"
 
-    # ---------------- Full load (cursor paging, no offset) ----------------
-
+    # ---------------- Full load ----------------
     def initial_full_load(self):
         print("=" * 70)
         print("[PRODUCER] FULL LOAD (cursor paging, order by updated_on,id ASC)")
@@ -176,6 +190,7 @@ class ChicagoCrimeAPIProducer:
         wm_id = ""
 
         while True:
+            # Fetch next page strictly after the current cursor
             where_clause = self._where_after_cursor(cursor_u, cursor_id)
             records = self.fetch_data(where_clause=where_clause, limit=self.batch_size)
 
@@ -189,15 +204,17 @@ class ChicagoCrimeAPIProducer:
                 self.producer.send(self.topic, key=str(rid) if rid is not None else None, value=rec)
                 total_sent += 1
 
-                # advance cursor in deterministic order
+                # Advance cursor in deterministic order
                 if ru is not None:
                     cursor_u = str(ru)
                 if rid is not None:
                     cursor_id = rid
 
+                # Track watermark to persist progress
                 wm_u = cursor_u
                 wm_id = str(cursor_id) if cursor_id is not None else ""
 
+                # Flush and save watermark for resilience
                 if total_sent % self.flush_every == 0:
                     self.producer.flush()
                     self.save_watermark(wm_u, wm_id)
@@ -206,6 +223,7 @@ class ChicagoCrimeAPIProducer:
             if len(records) < self.batch_size:
                 break
 
+        # Final flush + final watermark
         self.producer.flush()
         if wm_u is not None:
             self.save_watermark(wm_u, wm_id)
@@ -217,9 +235,12 @@ class ChicagoCrimeAPIProducer:
         print("=" * 70)
         return total_sent
 
-    # ---------------- Incremental (cursor paging + rollback on updated_on) ----------------
+    # ---------------- Incremental ----------------
 
     def incremental_update(self):
+        """
+        Incremental sync from persisted watermark.
+        """
         wm = self.get_last_watermark()
         last_u = wm["last_updated_on"]
         last_id = wm["last_id"]
@@ -233,7 +254,7 @@ class ChicagoCrimeAPIProducer:
         print(f"[PRODUCER] Order: updated_on ASC, id ASC | lookback_hours={self.lookback_hours}")
         print("=" * 70)
 
-        # rollback start cursor (duplicates OK)
+        # rollback start cursor
         start_u = last_u
         start_id = last_id or 0
 
@@ -311,10 +332,14 @@ class ChicagoCrimeAPIProducer:
             print("[PRODUCER] Waking up for incremental update...")
             self.incremental_update()
 
-    # ---------------- CSV (optional) ----------------
-    # If you still use CSV bootstrap: watermark is based on (Updated On, ID)
-
+    # ---------------- CSV ----------------
     def run_csv(self, max_rows=None):
+        """
+        CSV mode:
+        - Publish each CSV row as a record to Kafka.
+        - Derive watermark from max(Updated On, ID) seen in CSV.
+        - Then run incremental_update() to catch new changes from API after CSV watermark.
+        """
         total_sent = 0
         best_u = None
         best_id = ""
@@ -326,11 +351,13 @@ class ChicagoCrimeAPIProducer:
                 self.producer.send(self.topic, key=str(key), value=row)
                 total_sent += 1
 
+                # Track max watermark candidate in the CSV
                 u_str = row.get("Updated On") or row.get("updated_on")
                 dt = parse_dt_flexible(u_str) if u_str else None
                 rid = str(row.get("ID") or "")
 
                 if dt:
+                    # Compare by updated_on, then tie-break by ID
                     if (best_u is None) or (dt > best_u) or (dt == best_u and rid > best_id):
                         best_u = dt
                         best_id = rid
@@ -343,12 +370,14 @@ class ChicagoCrimeAPIProducer:
                     break
 
         self.producer.flush()
-
+        
+        # Save derived watermark from CSV so API incremental starts after it
         if best_u is not None:
             wm_u = best_u.strftime("%Y-%m-%dT%H:%M:%S")
             self.save_watermark(wm_u, best_id)
             print(f"[PRODUCER] Watermark set from CSV: (last_updated_on={wm_u}, last_id={best_id})")
 
+         # After CSV bootstrap, pull the API for anything newer
         self.incremental_update()
         print(f"[PRODUCER] CSV mode complete. Total CSV sent: {total_sent}")
         return total_sent

@@ -118,7 +118,7 @@ out = p_api.select(
     coalesce(col("c.Location"), to_json(col("a.location"))).alias("Location"),
 )
 
-# 4. Write to HDFS as Parquet
+# Write to HDFS as Parquet
 output_path = "hdfs://namenode:9000/data/raw/chicago_crimes.parquet"
 checkpoint_path = "hdfs://namenode:9000/user/spark-checkpoint/chicago_crime_stream"
 
