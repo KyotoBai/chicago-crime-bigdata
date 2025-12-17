@@ -38,7 +38,7 @@ Instructions offered belloww:
 docker compose exec jupyter bash
 
 # Enter the work folder
-cd /home/jovyan/notebook
+cd /home/jovyan/notebooks
 
 # Run the ML scripts
 python ml_crimeTypes_predict.py
