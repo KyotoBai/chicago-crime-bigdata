@@ -38,10 +38,10 @@ Instructions offered belloww:
 docker compose exec jupyter bash
 
 # Enter the work folder
-cd /home/jovyan/work
+cd /home/jovyan/notebooks
 
 # Run the ML scripts
-python ml_crimeTypes_predict.py.py
+python ml_crimeTypes_predict.py
 python ml_domestic_predict.py
 ```
 
