@@ -6,7 +6,7 @@ Analysis and Predictive Modeling of Crime in Chicago (2001–Present)
 Yuchen Liu\
 Haoyang Lin\
 Han Wen\
-Leile Zhang\
+Leile Zhang
 
 # Instructions
 1. Download all the project files
