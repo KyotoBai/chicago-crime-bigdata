@@ -225,27 +225,7 @@ services:
       start-notebook.sh
       --NotebookApp.token=''
       --NotebookApp.password=''
-
-  # ========================
-  # Visualization Dashboard
-  # ========================
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    restart: always
-    depends_on:
-      - mongodb
-    ports:
-      - "3000:3000"  # Grafana Web UI
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin123
-      - GF_INSTALL_PLUGINS=grafana-mongodb-datasource
-    volumes:
-      - grafana-data:/var/lib/grafana
-    networks:
-      - bigdata-network
-
+ 
 # ========================
 # Networks
 # ========================
@@ -265,4 +245,3 @@ volumes:
   zookeeper-logs:
   kafka-data:
   mongodb-data:
-  grafana-data:
